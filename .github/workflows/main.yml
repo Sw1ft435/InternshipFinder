@@ -3,7 +3,7 @@ name: Notify Canada Internships
 on:
   schedule:
     # Runs every hour
-    - cron: "0 * * * *"
+    - cron: "* * * * *"
   workflow_dispatch: # Manual trigger
 
 jobs:
