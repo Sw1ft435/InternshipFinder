@@ -20,6 +20,13 @@ jobs:
           path: .
         continue-on-error: true
 
+      # Ensure notified.json exists even if it's the first run
+      - name: Ensure notified.json exists
+        run: |
+          if [ ! -f notified.json ]; then
+            echo "[]" > notified.json
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -42,3 +49,4 @@ jobs:
         with:
           name: notified-json
           path: notified.json
+
