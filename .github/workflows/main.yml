@@ -2,17 +2,22 @@ name: Notify Canada Internships
 
 on:
   schedule:
-    # Runs every 30 minutes
+    # Runs every hour (change cron if you want different cadence)
     - cron: "*/30 * * * *"
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch: # manual trigger possible
+
+permissions:
+  contents: write  # allow the workflow to push commits using GITHUB_TOKEN
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout repository (enable push)
         uses: actions/checkout@v4
         with:
+          # GITHUB_TOKEN is automatically provided; checkout will configure git auth
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Ensure notified.json exists
@@ -20,11 +25,10 @@ jobs:
           if [ ! -f notified.json ]; then
             echo "[]" > notified.json
             git add notified.json
-            git commit -m "chore(notified): create notified.json [skip ci]" || true
-            # don't push here; we will push later if needed
+            git commit -m "chore(notified): add initial notified.json [skip ci]" || echo "no initial commit needed"
+          else
+            echo "notified.json exists"
           fi
-          echo "notified.json (before run):"
-          cat notified.json
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -39,25 +43,21 @@ jobs:
       - name: Run Canada Internship Notifier
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python notify_canada_interns.py
-          echo "notified.json (after run):"
-          cat notified.json || true
 
-      - name: Commit & push notified.json back to repo (if changed)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit & push notified.json (if changed)
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Only commit if there are changes
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add notified.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(notified): update notified.json [skip ci]" || true
-            # Push back using token
-            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}" HEAD:main
+          # only commit if there are staged changes
+          if git diff --cached --quiet; then
+            echo "No changes to notified.json — nothing to commit"
           else
-            echo "notified.json unchanged, nothing to push."
+            git commit -m "chore(notified): update notified.json [skip ci]"
+            # push back to the branch this workflow is running on
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            git push origin "HEAD:${BRANCH}"
+            echo "pushed updated notified.json to ${BRANCH}"
           fi
-
