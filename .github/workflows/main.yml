@@ -12,19 +12,23 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      # Restore the notified.json from previous runs (ignore errors if it doesn't exist)
+      # Try to restore notified.json from previous runs, ignore if not found
       - name: Restore notified.json
+        id: restore
         uses: actions/download-artifact@v4
         with:
           name: notified-json
           path: .
         continue-on-error: true
 
-      # Ensure notified.json exists even if it's the first run
+      # Ensure notified.json exists even if this is the first run
       - name: Ensure notified.json exists
         run: |
           if [ ! -f notified.json ]; then
             echo "[]" > notified.json
+            echo "Created empty notified.json for first run."
+          else
+            echo "Restored existing notified.json."
           fi
 
       - name: Set up Python
@@ -42,7 +46,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python notify_canada_interns.py
 
-      # Upload the updated notified.json for the next run
+      # Upload the updated notified.json for the next run. Working
       - name: Save notified.json
         if: always()
         uses: actions/upload-artifact@v4
