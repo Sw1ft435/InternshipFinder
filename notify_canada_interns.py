@@ -10,6 +10,7 @@ Fixes:
  - Prefer non-simplify.jobs apply link when multiple anchors exist
  - Sub-rows (company == '↳') inherit last main-row company and application link
  - Normalize/unescape URLs when saving/loading notified.json to dedupe correctly
+ - Persist notified.json immediately after each successful notification
 """
 import os
 import re
@@ -24,10 +25,12 @@ RAW_README_URL = "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Inte
 NOTIFIED_STORE = "notified.json"
 DISCORD_WEBHOOK_ENV = "DISCORD_WEBHOOK_URL"
 
+
 def fetch_readme_raw(url: str = RAW_README_URL, timeout: int = 15) -> str:
     r = requests.get(url, timeout=timeout)
     r.raise_for_status()
     return r.text
+
 
 def find_section_markdown(md: str, section_heading_keywords: List[str]) -> Optional[str]:
     lines = md.splitlines()
@@ -49,6 +52,7 @@ def find_section_markdown(md: str, section_heading_keywords: List[str]) -> Optio
         end_idx = len(lines)
     return "\n".join(lines[start_idx:end_idx])
 
+
 def extract_first_markdown_table(section_md: str) -> Optional[List[str]]:
     lines = section_md.splitlines()
     table_lines = []
@@ -61,7 +65,8 @@ def extract_first_markdown_table(section_md: str) -> Optional[List[str]]:
             break
     return table_lines or None
 
-def parse_markdown_table(table_lines: List[str]) -> List[Dict[str,str]]:
+
+def parse_markdown_table(table_lines: List[str]) -> List[Dict[str, str]]:
     cleaned = [ln.strip().strip("|").strip() for ln in table_lines if ln.strip()]
     if len(cleaned) < 2:
         return []
@@ -79,7 +84,8 @@ def parse_markdown_table(table_lines: List[str]) -> List[Dict[str,str]]:
         out.append({headers[i]: cells[i] for i in range(len(headers))})
     return out
 
-def parse_html_table(html_fragment: str) -> Optional[List[Dict[str,str]]]:
+
+def parse_html_table(html_fragment: str) -> Optional[List[Dict[str, str]]]:
     soup = BeautifulSoup(html_fragment, "lxml")
     table = soup.find("table")
     if not table:
@@ -91,12 +97,12 @@ def parse_html_table(html_fragment: str) -> Optional[List[Dict[str,str]]]:
         first_tr = table.find("tr")
         if not first_tr:
             return None
-        headers = [cell.get_text(strip=True) for cell in first_tr.find_all(["td","th"])]
+        headers = [cell.get_text(strip=True) for cell in first_tr.find_all(["td", "th"])]
     rows = []
     all_trs = table.find_all("tr")
     start_idx = 1 if all_trs and all_trs[0].find_all("th") else 0
     for tr in all_trs[start_idx:]:
-        cells = tr.find_all(["td","th"])
+        cells = tr.find_all(["td", "th"])
         if not cells:
             continue
         cell_raw = [str(cell) for cell in cells]
@@ -104,38 +110,51 @@ def parse_html_table(html_fragment: str) -> Optional[List[Dict[str,str]]]:
         while len(cell_raw) < len(headers):
             cell_raw.append("")
             cell_text.append("")
+        # store raw HTML string for each header (keeps anchors), plain text will be derived later
         rows.append({headers[i]: cell_raw[i].strip() for i in range(len(headers))})
     return rows
+
 
 def strip_html_tags(text: str) -> str:
     if not isinstance(text, str):
         return ""
     return BeautifulSoup(text, "lxml").get_text(strip=True)
 
+
+def normalize_url(url: str) -> str:
+    """
+    Basic normalization: unescape HTML entities and strip whitespace.
+    (We intentionally avoid heavy URL canonicalization to keep behavior predictable.)
+    """
+    if not isinstance(url, str):
+        return ""
+    return html_module.unescape(url).strip()
+
+
 def extract_link_from_cell(cell_text_or_html: str) -> Optional[str]:
     """
     Prefer extracting href from anchor tags (BeautifulSoup), picking a sensible anchor:
-      - Prefer anchors not pointing to simplify.jobs/p (that is the repo's internal simplify link)
+      - Prefer anchors not pointing to simplify.jobs/p (the repo's internal simplify link)
       - Otherwise return the first absolute http(s) href found
     Fallbacks to regex if no <a> tags exist.
+    Returned URL is normalized (HTML-unescaped).
     """
     if not cell_text_or_html:
         return None
 
-    # Parse with BeautifulSoup to get normalized href attributes
     try:
         bs = BeautifulSoup(cell_text_or_html, "lxml")
         anchors = bs.find_all("a", href=True)
         if anchors:
-            # prefer anchor that doesn't point to simplify.jobs/p (the simplify link)
+            # prefer anchors that don't point to simplify.jobs/p/ (these are "simplify" shortlinks)
             for a in anchors:
                 href = a.get("href", "").strip()
-                if href and href.lower().startswith("http") and "simplify.jobs/p/" not in href:
+                if href and href.lower().startswith(("http://", "https://")) and "simplify.jobs/p/" not in href.lower():
                     return normalize_url(href)
-            # otherwise return first absolute href
+            # otherwise return first absolute href available
             for a in anchors:
                 href = a.get("href", "").strip()
-                if href and href.lower().startswith("http"):
+                if href and href.lower().startswith(("http://", "https://")):
                     return normalize_url(href)
     except Exception:
         pass
@@ -145,48 +164,71 @@ def extract_link_from_cell(cell_text_or_html: str) -> Optional[str]:
     if m:
         return normalize_url(m.group(1))
 
-    # Fallback: href attr with regex (will likely contain &amp; if raw HTML)
+    # regex href capture (may contain &amp; etc.)
     m = re.search(r'href=["\'](https?://[^"\']+)["\']', cell_text_or_html)
     if m:
         return normalize_url(html_module.unescape(m.group(1)))
 
-    # Bare URL fallback
+    # fallback: any bare http(s) URL
     m = re.search(r"(https?://[^\s\)\]]+)", cell_text_or_html)
     if m:
         return normalize_url(m.group(1))
 
     return None
 
-def normalize_url(url: str) -> str:
-    # Unescape HTML entities, strip whitespace
-    if not url:
-        return ""
-    return html_module.unescape(url).strip()
 
 def location_is_canada(location_text: str) -> bool:
     if not location_text:
         return False
     txt = strip_html_tags(location_text).lower()
-    return "canada" in txt  # strict: match the word 'canada' anywhere
+    return "canada" in txt  # strict: must contain 'canada'
+
 
 def load_notified(path=NOTIFIED_STORE) -> set:
+    """
+    Load notified.json if present. Normalize (unescape) stored strings so dedupe matches current normalized URLs.
+    """
     if os.path.exists(path):
         try:
             with open(path, "r") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    # Normalize/unescape all stored values for consistent matching
                     return set(normalize_url(x) for x in data if isinstance(x, str))
         except Exception:
             return set()
     return set()
 
-def save_notified(notified: set, path=NOTIFIED_STORE):
-    # Save sorted list (normalized) so subsequent runs load the same normalized strings
-    with open(path, "w") as f:
-        json.dump(sorted(list(notified)), f, indent=2)
 
-def send_discord_webhook(webhook_url: str, title: str, description: str, url: Optional[str], fields: List[Dict[str,str]]):
+def save_notified(notified: set, path=NOTIFIED_STORE):
+    """
+    Save sorted normalized list to disk for deterministic artifacts.
+    """
+    with open(path, "w") as f:
+        json.dump(sorted(list(normalize_url(x) for x in notified)), f, indent=2)
+
+
+def build_normalized_rows(raw_rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Build rows with both text-only and raw variants:
+      - 'Header' => text-only string
+      - 'Header_raw' => raw HTML (if provided by HTML parsing) or original string
+    """
+    normalized = []
+    for r in raw_rows:
+        row = {}
+        for k, v in r.items():
+            if isinstance(v, str) and ("<" in v and ">" in v and "href" in v):
+                # raw HTML from parse_html_table
+                row[f"{k}_raw"] = v
+                row[k] = strip_html_tags(v)
+            else:
+                row[k] = strip_html_tags(v)
+                row[f"{k}_raw"] = v
+        normalized.append(row)
+    return normalized
+
+
+def send_discord_webhook(webhook_url: str, title: str, description: str, url: Optional[str], fields: List[Dict[str, str]]):
     payload = {
         "embeds": [
             {
@@ -201,19 +243,6 @@ def send_discord_webhook(webhook_url: str, title: str, description: str, url: Op
     r = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
     r.raise_for_status()
 
-def build_normalized_rows(raw_rows: List[Dict[str,str]]) -> List[Dict[str,str]]:
-    normalized = []
-    for r in raw_rows:
-        row = {}
-        for k, v in r.items():
-            if isinstance(v, str) and ("<" in v and ">" in v and "href" in v):
-                row[f"{k}_raw"] = v
-                row[k] = strip_html_tags(v)
-            else:
-                row[k] = strip_html_tags(v)
-                row[f"{k}_raw"] = v
-        normalized.append(row)
-    return normalized
 
 def main():
     webhook_url = os.getenv(DISCORD_WEBHOOK_ENV)
@@ -254,7 +283,7 @@ def main():
 
     normalized_rows = build_normalized_rows(rows)
 
-    # derive human headers
+    # derive human headers (exclude *_raw keys)
     headers = list(normalized_rows[0].keys())
     human_headers = [h for h in headers if not h.endswith("_raw")]
 
@@ -274,7 +303,7 @@ def main():
         location = item.get(location_header, "")
         age = item.get(age_header, "")
 
-        # Only rows that explicitly say "Canada"
+        # Only rows that explicitly say "Canada" in the location text
         if not location_is_canada(location):
             continue
 
@@ -282,61 +311,69 @@ def main():
         if not age or not re.search(r"\b0\s*d\b|\b0\s*days?\b", age.lower()):
             continue
 
-        # Extract link from raw application cell first; raw cells preserve anchors
+        # Prefer raw application cell (preserves anchors)
         app_raw_key = (application_header + "_raw") if application_header else None
         app_raw_val = item.get(app_raw_key or "", "") if app_raw_key else ""
         current_link = extract_link_from_cell(app_raw_val) or extract_link_from_cell(item.get(application_header or "", ""))
 
         company_text_raw = item.get(company_header, "")
-        # If main row, update previous_company; if it's sub-row '↳', use previous_company later
-        if company_text_raw and strip_html_tags(company_text_raw).strip() != "↳":
-            previous_company = strip_html_tags(company_text_raw).strip()
+        company_text_stripped = strip_html_tags(company_text_raw).strip() if company_text_raw else ""
 
-        # If main row (not '↳'), and it has a link, update last_valid_link
-        if (company_text_raw and strip_html_tags(company_text_raw).strip() != "↳") and current_link:
+        # Track previous main-row company (for sub-rows that display '↳')
+        if company_text_stripped and company_text_stripped != "↳":
+            previous_company = company_text_stripped
+
+        # If main row and has a link, update last_valid_link (so sub-rows inherit it)
+        if company_text_stripped and company_text_stripped != "↳" and current_link:
             last_valid_link = current_link
 
-        # For subrow rows, fall back to last_valid_link
+        # For sub-rows, fall back to last_valid_link if current is missing
         link = current_link or last_valid_link
 
-        # Build dedupe key: prefer link (normalized), else fallback to company|role|location (use previous_company for '↳')
+        # Build dedupe key:
         if link:
             key = normalize_url(link)
         else:
-            comp_for_key = previous_company if strip_html_tags(company_text_raw).strip() == "↳" and previous_company else strip_html_tags(company_text_raw).strip()
-            role_text = item.get(role_header, "").strip()
+            # If this is a sub-row '↳' and previous_company is available, use it, otherwise company_text_stripped
+            comp_for_key = previous_company if company_text_stripped == "↳" and previous_company else company_text_stripped
+            role_text = (item.get(role_header, "") or "").strip()
             loc_text = strip_html_tags(location).strip()
-            key = f"{comp_for_key}|{role_text}|{loc_text}"
+            key = normalize_url(f"{comp_for_key}|{role_text}|{loc_text}")
 
         # Skip if already notified
         if key in notified:
-            # debug optionally
-            # print("Skipping already-notified key:", key)
             continue
 
-        company = previous_company if strip_html_tags(company_text_raw).strip() == "↳" and previous_company else strip_html_tags(company_text_raw)
-        role = strip_html_tags(item.get(role_header, ""))
+        # Compose message fields (use previous_company for subrows)
+        company_display = previous_company if company_text_stripped == "↳" and previous_company else company_text_stripped
+        role_display = strip_html_tags(item.get(role_header, ""))
+        loc_display = strip_html_tags(location)
+        age_display = age or ""
+
         fields = [
-            {"name": "Company", "value": company or "—", "inline": True},
-            {"name": "Role", "value": role or "—", "inline": True},
-            {"name": "Location", "value": strip_html_tags(location) or "—", "inline": True},
-            {"name": "Age", "value": age or "—", "inline": True},
+            {"name": "Company", "value": company_display or "—", "inline": True},
+            {"name": "Role", "value": role_display or "—", "inline": True},
+            {"name": "Location", "value": loc_display or "—", "inline": True},
+            {"name": "Age", "value": age_display or "—", "inline": True},
         ]
         description = f"[Click to apply]({link})" if link else "Application link not found."
-        title = f"New Canada Software Engineering Intern — {company or 'Unknown'}"
+        title = f"New Canada Software Engineering Intern — {company_display or 'Unknown'}"
+
         try:
             send_discord_webhook(webhook_url, title=title, description=description, url=link, fields=fields)
-            print(f"Notified: {company} — {role} — {strip_html_tags(location)}")
+            print(f"Notified: {company_display} — {role_display} — {loc_display}")
+            # persist immediately — ensure saved values are normalized
             notified.add(key)
+            save_notified(notified)
             newly_notified.append(key)
         except Exception as e:
-            print("Failed sending webhook for", company, ":", e, file=sys.stderr)
+            print("Failed sending webhook for", company_display, ":", e, file=sys.stderr)
 
     if newly_notified:
-        save_notified(notified)
         print(f"Saved {len(newly_notified)} new notified items.")
     else:
         print("No new Canada postings to notify.")
+
 
 if __name__ == "__main__":
     main()
