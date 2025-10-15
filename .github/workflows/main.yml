@@ -1,0 +1,44 @@
+name: Notify Canada Internships
+
+on:
+  schedule:
+    # Runs every hour
+    - cron: "0 * * * *"
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      # Restore the notified.json from previous runs
+      - name: Restore notified.json
+        uses: actions/download-artifact@v4
+        with:
+          name: notified-json
+          path: .
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml
+
+      - name: Run Canada Internship Notifier
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python notify_canada_interns.py
+
+      # Upload the updated notified.json for the next run
+      - name: Save notified.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notified-json
+          path: notified.json
+
