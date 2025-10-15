@@ -14,8 +14,6 @@ RAW_README_URL = "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Inte
 NOTIFIED_STORE = "notified.json"
 DISCORD_WEBHOOK_ENV = "DISCORD_WEBHOOK_URL"
 
-CANADA_TOKENS = ["Canada"]
-
 def fetch_readme_raw(url: str = RAW_README_URL, timeout: int = 15) -> str:
     r = requests.get(url, timeout=timeout)
     r.raise_for_status()
@@ -76,7 +74,6 @@ def parse_html_table(html_fragment: str) -> Optional[List[Dict[str,str]]]:
     table = soup.find("table")
     if not table:
         return None
-    # Headers
     ths = table.find_all("th")
     if ths:
         headers = [th.get_text(strip=True) for th in ths]
@@ -85,7 +82,6 @@ def parse_html_table(html_fragment: str) -> Optional[List[Dict[str,str]]]:
         if not first_tr:
             return None
         headers = [cell.get_text(strip=True) for cell in first_tr.find_all(["td","th"])]
-    # Rows
     rows = []
     all_trs = table.find_all("tr")
     start_idx = 1 if all_trs and all_trs[0].find_all("th") else 0
@@ -208,6 +204,9 @@ def main():
     notified = load_notified()
     newly_notified = []
 
+    # Track last valid link to handle sub-rows
+    last_valid_link = None
+
     for item in normalized_rows:
         location = item.get(location_header, "")
         age = item.get(age_header, "")
@@ -215,7 +214,13 @@ def main():
             continue
         if not age or not re.match(r"0\s*d", age.lower()):
             continue
-        link = extract_link_from_cell(item.get(application_header,""))
+
+        # Use current link or fallback to last valid main-row link
+        current_link = extract_link_from_cell(item.get(application_header,""))
+        if item.get(company_header,"").strip() != "↳" and current_link:
+            last_valid_link = current_link
+        link = current_link or last_valid_link
+
         key = normalize_key_for_posting(item)
         if key in notified:
             continue
