@@ -12,12 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      # Restore the notified.json from previous runs
+      # Restore the notified.json from previous runs (ignore errors if it doesn't exist)
       - name: Restore notified.json
         uses: actions/download-artifact@v4
         with:
           name: notified-json
           path: .
+        continue-on-error: true
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -41,4 +42,3 @@ jobs:
         with:
           name: notified-json
           path: notified.json
-
